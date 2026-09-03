@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "flashing_nozzle_design"
+version = "0.0.1"
+description = "Sizing and analysis tools for flashing nozzles and turbine expanders."
+authors = ["Roberto Agromayor <roagr@dtu.dk>", "Simone Parisi <sipar@dtu.dk>", "Fredrik Haglind <fhag@dtu.dk>"]
+license = "MIT"
+keywords = ["flashing-flow", "two-phase-flow", "nozzle-design", "organic-rankine-cycle", "turbomachinery"]
+package-mode = true
+packages = [{ include = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+jaxprop = "0.5.6"
+
+[tool.poetry.group.dev.dependencies]
+ipython = "^8.24.0"
+black = "^24.4.2"
+pytest = "^8.2.1"
+pyzotero = "^1.5.19"
+numpydoc = "^1.7.0"
+sphinx = "^7.3.7"
+sphinx-tabs = "^3.4.5"
+sphinx-book-theme = "^1.1.2"
+sphinx-rtd-theme = "^2.0.0"
+sphinxcontrib-bibtex = "^2.6.2"
+sphinxawesome-theme = "^5.1.5"
+sphinx-design = "^0.6.0"
+sphinx-togglebutton = "^0.3.2"
+bump2version = "^1.0.1"
+myst-parser = "^3.0"
+linkify-it-py = "^2.0"
+sphinx-autobuild = "^2024.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
