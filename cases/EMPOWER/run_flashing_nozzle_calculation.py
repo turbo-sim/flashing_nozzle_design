@@ -18,7 +18,7 @@ from flashing_nozzle_design import graphics
 graphics.set_plot_options(grid=True)
 
 # --- Create output directory ---
-OUT_DIR = "results_v5"
+OUT_DIR = "results"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
@@ -26,9 +26,9 @@ if __name__ == "__main__":
 
     print("Start:", datetime.datetime.now())
     # Load configuration file
-    with open("test_rig_case.yaml", "r") as fp:
+    with open("EMPOWER.yaml", "r") as fp:
         config = yaml.safe_load(fp)
-        fluids = config.get("fluids", jxp.CP.FluidsList())
+        fluids = config.get("fluids_override", jxp.CP.FluidsList())
 
     Nsuitable = 0
     Nconverged = 0
@@ -40,7 +40,7 @@ if __name__ == "__main__":
         try:
             fluid = jxp.Fluid(
                 name=fluid_name,
-                backend=config["backend"],
+                backend=config["fluid_backend"],
             )
         except Exception as e:
             fn.print_fluid_status("SKIP", fluid_name, f"Initialization failed ({e})")
@@ -52,6 +52,7 @@ if __name__ == "__main__":
             fn.print_fluid_status("SKIP", fluid.name, message)
             continue
         Nsuitable += 1
+
         # 3. Run rig sizing
         converged, result = fn.rig_sizing(fluid, config)
         if not converged:
@@ -62,10 +63,11 @@ if __name__ == "__main__":
         results[fluid_name] = result
         fn.print_fluid_status("OK", fluid.name)
         Nconverged += 1
+
         # 5. Ts plot and parametric study
-        if fluid_name in config["fluids_parametric"]:
+        if fluid_name in config["fluids_parametric_study"]:
             fn.plot_fluid_Ts(fluid_name, result, OUT_DIR, savefig=True)
-            fn.parametric_study(fluid, config, result["A_throat"], OUT_DIR)
+            fn.parametric_study(fluid, config, result["throat_area"], OUT_DIR)
 
     print("Fluid screening: %d investigated, %d suitable, %d converged" % (len(fluids), Nsuitable, Nconverged))
     # Write YAML summary
@@ -79,8 +81,8 @@ if __name__ == "__main__":
 
     # Write CSV summary
     df = fn.results_to_dataframe(results)
-    df = df.sort_values("A_throat_mm2", ascending=False)
-    df.round(2).to_csv(os.path.join(OUT_DIR, "results.csv"), index=False)
+    df = df.sort_values("throat_area", ascending=False)
+    df.to_csv(os.path.join(OUT_DIR, "results.csv"), index=False)
     
     print("End:", datetime.datetime.now())
     plt.show()

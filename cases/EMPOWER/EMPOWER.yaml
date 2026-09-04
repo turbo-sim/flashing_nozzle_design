@@ -1,0 +1,151 @@
+# =============================================================================
+# Fluid selection
+# =============================================================================
+
+# Optional explicit list of CoolProp fluid names to screen.
+# If omitted (commented out), every fluid in the CoolProp fluids list is screened.
+# fluids_override: [Novec649, R1233zd(E)]
+
+# Fluid names for which the T-s diagram and parametric study are also generated.
+fluids_parametric_study: [Novec649, R1233zd(E)]
+
+# Backend passed to the fluid property library (e.g. REFPROP, HEOS).
+fluid_backend: REFPROP
+
+
+# =============================================================================
+# Fluid screening criteria
+# =============================================================================
+
+# Minimum acceptable critical temperature [K]. Fluids with a lower critical
+# temperature are rejected.
+critical_temperature_min: 373.15
+
+# Maximum acceptable critical temperature [K]. Fluids with a higher critical
+# temperature are rejected. (673.15 K was used as a stricter alternative.)
+critical_temperature_max: 9999 #673.15
+
+# Maximum acceptable triple-point temperature [K]. Fluids with a higher
+# triple-point temperature are rejected.
+triple_point_temperature_max: 273.15
+
+# Ambient temperature [K], used to evaluate the ambient saturation pressure.
+ambient_temperature: 293.15
+
+# Minimum acceptable ambient saturation pressure [Pa]. Fluids whose saturation
+# pressure at the ambient temperature falls below this value are rejected.
+ambient_pressure_min: 20000.0
+
+# Minimum nozzle exit Mach number required for a design to be satisfactory [-].
+nozzle_mach_min: 1.4
+
+
+# =============================================================================
+# Cycle operating point (most probable point, MPP)
+# =============================================================================
+
+# If true, the turbine inlet temperature is set from the reduced value
+# (turbine_inlet_temperature_reduced x fluid critical temperature) instead of
+# the absolute value (turbine_inlet_temperature).
+use_reduced_turbine_inlet_temperature: True
+
+# Absolute turbine inlet temperature [K], used when
+# use_reduced_turbine_inlet_temperature is false.
+turbine_inlet_temperature: 423.15
+
+# Turbine inlet temperature as a fraction of the fluid critical temperature [-],
+# used when use_reduced_turbine_inlet_temperature is true.
+turbine_inlet_temperature_reduced: 0.95
+
+# Turbine inlet vapor quality [-].
+turbine_inlet_quality: 0.05
+
+# Condensing temperature [K].
+condensing_temperature: 333.15
+
+
+# =============================================================================
+# Component efficiencies and losses
+# =============================================================================
+
+# Nozzle isentropic efficiency [-].
+efficiency_nozzle: 1.0
+
+# Turbine isentropic efficiency [-].
+efficiency_turbine: 1.0
+
+# Pump isentropic efficiency [-].
+efficiency_pump: 0.7
+
+# Fractional pressure loss across the heater [-].
+pressure_loss_fraction_heater: 0.03
+
+# Fractional pressure loss across the condenser [-].
+pressure_loss_fraction_condenser: 0.03
+
+# Turbine stage degree of reaction [-]. Sets the nozzle exit pressure between
+# the turbine inlet and outlet pressures (0 = pure impulse stage).
+degree_of_reaction: 0.0
+
+# Subcooling of the pump inlet state below the condensing temperature [K].
+subcooling_pump_inlet: 5.0
+
+# Subcooling margin enforced at the heater outlet / throttle inlet state [K].
+subcooling_heater_outlet: 5.0
+
+
+# =============================================================================
+# Rig sizing targets
+# =============================================================================
+
+# Target heater thermal power [W], used to size the mass flow rate.
+heater_power_target: 90000
+
+# Turbine specific speed [-], used to estimate the turbine rotational speed.
+turbine_specific_speed: 0.4
+
+# Convergent section length-to-throat-diameter ratio [-], used to size the
+# length of the convergent nozzle section.
+convergent_length_to_throat_diameter_ratio: 2.0
+
+# Divergent section length-to-throat-diameter ratio [-], used together with
+# convergent_length_to_throat_diameter_ratio to size the total nozzle length
+# (inlet to exit) for the exit droplet breakup calculation.
+divergent_length_to_throat_diameter_ratio: 10.0
+
+# Number of parallel nozzle throats sharing the total mass flow rate [-].
+# The diameter of each throat is derived from its share of the total area:
+# throat_area_per_nozzle = throat_area / number_of_nozzles,
+# throat_diameter = sqrt(4 * throat_area_per_nozzle / pi).
+number_of_nozzles: 15
+
+
+# =============================================================================
+# Droplet breakup model
+# =============================================================================
+
+# Critical Weber number used in the droplet breakup criterion [-].
+weber_number_critical: 12
+
+# Droplet drag coefficient [-], used in the droplet breakup model.
+droplet_drag_coefficient: 0.4
+
+
+# =============================================================================
+# Parametric study sweep
+# =============================================================================
+
+# Condenser temperatures [K] evaluated in the parametric study.
+condensing_temperatures_sweep: [333.15]
+
+# [start, stop, num] linspace of turbine inlet vapor quality values [-] swept
+# in the parametric study.
+turbine_inlet_quality_sweep: [0.001, 0.999, 18]
+
+# [start, stop, num] linspace of reduced turbine inlet temperature values
+# (fraction of the fluid critical temperature) [-] swept in the parametric
+# study.
+turbine_inlet_temperature_reduced_sweep: [0.85, 0.99, 16]
+
+
+

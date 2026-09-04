@@ -3,6 +3,15 @@
 Cycle, choking, droplet-size and test-rig sizing routines for the EMPOWER
 preliminary test rig model (flashing two-phase nozzle feeding a turbine
 expander in an organic Rankine cycle).
+
+This module reads its input parameters using descriptive key names (see
+examples/test_rig_case_renamed.yaml for the matching input file) and exports
+its results using descriptive key names. All quantities, input and output,
+are in base SI units (Pa, K, W, m, m2, m/s, kg/s, kg/(m2 s)) except turbine
+rotational speed, which is reported in rpm rather than rad/s as a practical
+convention for turbomachinery. Since every quantity follows this single
+convention, unit suffixes are omitted from the names themselves.
+functions_old.py keeps the original, terser naming for reference.
 """
 
 import os
@@ -32,7 +41,9 @@ i_pump_in = STATE_MAPPING["pump_inlet"]
 i_pump_out = STATE_MAPPING["pump_outlet"]
 i_heater_out = STATE_MAPPING["heater_outlet"]
 i_turb_in = STATE_MAPPING["turbine_inlet"]
+i_nozzle_out = STATE_MAPPING["nozzle_outlet"]
 i_turb_out = STATE_MAPPING["turbine_outlet"]
+i_cond_liq = STATE_MAPPING["condenser_liquid"]
 
 
 def to_builtin(obj):
@@ -59,19 +70,29 @@ def results_to_dataframe(result):
     """
     Convert rig sizing results to a flat pandas DataFrame
     (one row per fluid).
+
+    All quantities are kept in base SI units (no k/m/M-style multiples).
+    Unit conversions for display/reporting purposes are left to a future
+    exporting/printing function, not implemented here.
     """
 
     rows = []
     for fluid_name, res in result.items():
         rows.append({
-            "fluid": fluid_name,
-            "Pamb_kPa": res["p_amb"] / 1e3,
-            "Pmax_kPa": max(res["states"]["p"]) / 1e3,
-            "Tmax_C": max(res["states"]["T"]) - 273.15,
-            "A_throat_mm2": res["A_throat"] * 1e6,
-            "Ma_noz": res["nozzle_mach"],
-            "kRPM": res["RPM"]/1000,
-            "D_drop_ratio": res["D_drop_ratio"],
+            "fluid_name": fluid_name,
+            "ambient_pressure": res["ambient_pressure"],
+            "maximum_pressure": max(res["states"]["p"]),
+            "maximum_temperature": max(res["states"]["T"]),
+            "throat_area": res["throat_area"],
+            "number_of_nozzles": res["number_of_nozzles"],
+            "throat_area_per_nozzle": res["throat_area_per_nozzle"],
+            "throat_diameter": res["throat_diameter"],
+            "nozzle_mach_number": res["nozzle_mach_number"],
+            "turbine_speed": res["turbine_speed"],
+            "droplet_diameter_throat": res["droplet_diameter_throat"],
+            "throat_to_droplet_diameter_ratio": res["throat_to_droplet_diameter_ratio"],
+            "droplet_diameter_exit": res["droplet_diameter_exit"],
+            "throat_to_droplet_diameter_ratio_exit": res["throat_to_droplet_diameter_ratio_exit"],
         })
 
     return pd.DataFrame(rows)
@@ -191,26 +212,36 @@ def find_choked_state(fluid, h0, s0, T_min):
     return st_star, st_star.d * v_star, v_star,
 
 
-def compute_droplet_size(fluid, v_star, p_star, L_conv, data):
+def compute_droplet_size(fluid, velocity, pressure, length, data):
     """
-    Estimate droplet size and slip velocity at the choking location.
+    Estimate droplet size and slip velocity at a given location along the
+    nozzle, assuming uniform acceleration from rest over the given length.
 
-    The model balances aerodynamic forces and surface tension
-    using a Weber-number-based breakup criterion in a converging
-    nozzle.
+    The model balances aerodynamic forces and surface tension using a
+    Weber-number-based breakup criterion. It is applicable wherever the
+    flow is reasonably described as liquid droplets carried by a
+    continuous vapor phase (e.g. near the nozzle exit, at higher vapor
+    quality); it is less applicable where the flow is still bubbly (e.g.
+    near the throat, at low vapor quality, shortly after nucleation).
 
     Parameters
     ----------
     fluid : jxp.Fluid
         Working fluid object.
-    v_star : float
-        Choked velocity [m/s].
-    p_star : float
-        Choked pressure [Pa].
+    velocity : float
+        Flow velocity at the location of interest [m/s] (e.g. the choked
+        throat velocity, or the nozzle exit velocity), used together with
+        `length` to estimate the mean acceleration up to that point.
+    pressure : float
+        Static pressure at the location of interest [Pa], used to evaluate
+        the saturated liquid/vapor properties there.
+    length : float
+        Distance over which the flow is assumed to accelerate uniformly
+        from rest to `velocity` [m] (e.g. the convergent section length for
+        the throat, or the full nozzle length for the exit).
     data : dict
         Model parameters, including:
-        - convergent_length
-        - Weber
+        - weber_number_critical
         - droplet_drag_coefficient
 
     Returns
@@ -220,18 +251,18 @@ def compute_droplet_size(fluid, v_star, p_star, L_conv, data):
     v_slip : float
         Vapor-liquid slip velocity [m/s].
     """
-    We = data["Weber"]
+    We = data["weber_number_critical"]
     Cd = data["droplet_drag_coefficient"]
 
-    # Saturated liquid and vapor states at choking pressure
-    st_l = fluid.get_state(jxp.PQ_INPUTS, p_star, 0.0)
-    st_v = fluid.get_state(jxp.PQ_INPUTS, p_star, 1.0)
+    # Saturated liquid and vapor states at the location's pressure
+    st_l = fluid.get_state(jxp.PQ_INPUTS, pressure, 0.0)
+    st_v = fluid.get_state(jxp.PQ_INPUTS, pressure, 1.0)
 
     # Density difference driving breakup
     rholv = st_l.d - st_v.d
 
-    # Mean axial acceleration in the convergent section
-    acceleration = v_star**2 / (2 * L_conv)
+    # Mean axial acceleration from rest, over the given length
+    acceleration = velocity**2 / (2 * length)
 
     # Weber-number-based droplet diameter
     D_drop = np.sqrt(
@@ -255,14 +286,14 @@ def evaluate_cycle(fluid, data, TIT, TIQ, Tcond, A_throat=None):
     """
 
     # Ambient saturation pressure
-    st_amb = fluid.get_state(jxp.QT_INPUTS, 0.0, data["Tamb"])
-    Pamb = st_amb.p
+    st_amb = fluid.get_state(jxp.QT_INPUTS, 0.0, data["ambient_temperature"])
+    p_ambient = st_amb.p
 
     # 8 - Saturated liquid after condenser
     st_8 = fluid.get_state(jxp.QT_INPUTS, 0.0, Tcond)
 
     # 1 - Pump inlet
-    st_1 = fluid.get_state(jxp.PT_INPUTS, st_8.p, st_8.T - data["dT_subcool_1"])
+    st_1 = fluid.get_state(jxp.PT_INPUTS, st_8.p, st_8.T - data["subcooling_pump_inlet"])
 
     # 4 - Turbine inlet
     st_4 = fluid.get_state(jxp.QT_INPUTS, TIQ, TIT)
@@ -270,30 +301,30 @@ def evaluate_cycle(fluid, data, TIT, TIQ, Tcond, A_throat=None):
     # 3 - Heater outlet / throttle inlet
     p_min = st_1.p
     p_max = 2.0 * fluid.critical_point.p
-    st_3 = solve_subcooled_state(fluid, st_4.h, data["dT_subcool_3"], p_min, p_max)
+    st_3 = solve_subcooled_state(fluid, st_4.h, data["subcooling_heater_outlet"], p_min, p_max)
 
     # 2 - Pump outlet
-    p2 = st_3.p / (1.0 - data["heater_pressure_loss_fraction"])
+    p2 = st_3.p / (1.0 - data["pressure_loss_fraction_heater"])
     st_2s = fluid.get_state(jxp.PSmass_INPUTS, p2, st_1.s)
-    h2 = st_1.h + (st_2s.h - st_1.h) / data["eta_pump"]
+    h2 = st_1.h + (st_2s.h - st_1.h) / data["efficiency_pump"]
     st_2 = fluid.get_state(jxp.HmassP_INPUTS, h2, p2)
 
-    # Sonic conditions
+    # Sonic (choked) conditions at the nozzle/turbine throat
     st_star, G_star, v_star = find_choked_state(fluid, st_4.h, st_4.s, st_1.T)
 
     # 6 - Turbine outlet
-    p6 = st_1.p / (1.0 - data["condenser_pressure_loss_fraction"])
+    p6 = st_1.p / (1.0 - data["pressure_loss_fraction_condenser"])
     st_6s = fluid.get_state(jxp.PSmass_INPUTS, p6, st_4.s)
     dh_is = st_4.h - st_6s.h
     spouting_velocity = np.sqrt(2.0 * dh_is)
-    h6 = st_4.h - dh_is * data["eta_turb"]
+    h6 = st_4.h - dh_is * data["efficiency_turbine"]
     st_6 = fluid.get_state(jxp.HmassP_INPUTS, h6, p6)
 
     # 5 - Nozzle outlet (representative reaction)
-    R = data["reaction"]
+    R = data["degree_of_reaction"]
     p5 = p6 + R * (st_4.p - p6)
     st_5s = fluid.get_state(jxp.PSmass_INPUTS, p5, st_4.s)
-    h5 = st_4.h + (st_5s.h - st_4.h) * data["eta_noz"]
+    h5 = st_4.h + (st_5s.h - st_4.h) * data["efficiency_nozzle"]
     st_5 = fluid.get_state(jxp.HmassP_INPUTS, h5, p5)
     nozzle_velocity = np.sqrt(2.0 * (st_4.h - st_5.h))
     nozzle_mach = nozzle_velocity / st_5.a
@@ -325,36 +356,79 @@ def evaluate_cycle(fluid, data, TIT, TIQ, Tcond, A_throat=None):
             "q": export("q"),
             "a": export("a"),
         },
-        "p_amb": Pamb,
-        "p_star": st_star.p,
-        "v_star": v_star,
-        "G_star": G_star,
+        "ambient_pressure": p_ambient,
+        "choking_pressure": st_star.p,
+        "choking_velocity": v_star,
+        "choking_mass_flux": G_star,
         "spouting_velocity": spouting_velocity,
         "nozzle_velocity": nozzle_velocity,
-        "nozzle_mach": nozzle_mach,
+        "nozzle_mach_number": nozzle_mach,
         "efficiency_cycle": efficiency_cycle,
-        "turbine_outlet_pseudoquality": pseudoQ,
+        "turbine_outlet_pseudo_quality": pseudoQ,
     }
     if A_throat:
         add_scale_to_result(result, A_throat)
     return result
 
 
-def plot_fluid_Ts(fluid_name, result, out_dir, savefig=True):
+
+# Reds colormap range used for sweep coloring below: the colormap's own low
+# end is too close to white to read well, so colors are sampled from this
+# narrower slice instead of the full [0, 1] range.
+REDS_RANGE = (0.3, 0.9)
+
+
+def reds_color(t):
+    """Map a normalized value t in [0, 1] to the REDS_RANGE slice of the Reds colormap."""
+    low, high = REDS_RANGE
+    return mpl.cm.Reds(low + (high - low) * t)
+
+
+def plot_fluid_Ts(fluid_name, results, out_dir, savefig=True, y_margin=20.0, labels=None):
     """
-    Plot T-s diagram for all operating conditions of one fluid.
+    Plot a T-s diagram for one operating condition, or overlay several.
+
+    Backward compatible with functions.py's plot_fluid_Ts: pass a single
+    result dict (as returned by rig_sizing()/evaluate_cycle()) to plot one
+    cycle exactly as before (single blue line, no legend). Pass a list of
+    result dicts to overlay several cycles on the same phase diagram: each
+    curve's color comes from the Reds colormap, scaled by its nozzle inlet
+    temperature (lighter red for cooler, darker red for hotter), with a
+    legend (rather than a colorbar) showing "TIT = <value> degC" per curve.
 
     Parameters
     ----------
     fluid_name : str
-    result : dict
-        results[fluid_name] from the rig sizing / cycle evaluation.
+    results : dict or list of dict
+        A single result, or a list of results to overlay.
+    out_dir : str
+    y_margin : float, optional
+        Margin [K] added below the condensing temperature and above the
+        higher of the turbine inlet temperature(s) / critical temperature.
+    labels : list of str, optional
+        One legend label per entry in `results`, used only when `results`
+        is a list. Defaults to "TIT = <value> degC" using the nozzle inlet
+        temperature of each result.
     """
+    single_result = isinstance(results, dict)
+    result_list = [results] if single_result else list(results)
+
+    if not single_result:
+        # Color and (by default) label each curve by its nozzle inlet
+        # temperature (the "turbine_inlet" state in this nozzle-only rig).
+        T_inlet = [result["states"]["T"][i_turb_in] for result in result_list]
+        norm = mpl.colors.Normalize(vmin=min(T_inlet), vmax=max(T_inlet))
+        colors = [reds_color(norm(T)) for T in T_inlet]
+        if labels is None:
+            labels = [f"TIT = {T - 273.15:.0f} °C" for T in T_inlet]
+        # Plot from the highest nozzle inlet temperature down to the lowest.
+        plot_order = sorted(range(len(result_list)), key=lambda i: T_inlet[i], reverse=True)
+    else:
+        plot_order = [0]
 
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.set_xlabel("Entropy [kJ/(kg K)]")
     ax.set_ylabel("Temperature [°C]")
-    #ax.set_title(fluid_name)
 
     # Plot phase diagram
     fluid = jxp.Fluid(name=fluid_name)
@@ -365,28 +439,120 @@ def plot_fluid_Ts(fluid_name, result, out_dir, savefig=True):
     # Reference state for axis limits
     state0 = fluid.get_state(jxp.QT_INPUTS, 0.0, 273.15)
 
-    states = result["states"]
-    s = np.asarray(states["s"])
-    T = np.asarray(states["T"])
-    ax.plot(s, T, marker="o", color='b')
+    for i in plot_order:
+        result = result_list[i]
+        states = result["states"]
+        s = np.asarray(states["s"])
+        T = np.asarray(states["T"])
+        if single_result:
+            ax.plot(s, T, marker="o", color="b", markersize=4)
+        else:
+            ax.plot(s, T, marker="o", color=colors[i], label=labels[i], markersize=4)
+
+    if not single_result:
+        ax.legend(loc="upper left", fontsize=9)
+
+    # Temperature axis limits: below the (lowest) condensing temperature,
+    # and above the (highest) turbine inlet temperature / the critical
+    # temperature, so the full saturation dome is always visible.
+    T_cond = min(result["states"]["T"][i_cond_liq] for result in result_list)
+    T_tit_max = max(result["states"]["T"][i_turb_in] for result in result_list)
+    y_bottom = (T_cond - y_margin) - 273.15
+    y_top = (max(T_tit_max, fluid.critical_point.T) + y_margin) - 273.15
 
     # Adjust axes scale and limits
-    #ax.legend(loc="upper left", fontsize=12)
     graphics.scale_graphics_x(fig, scale=1e-3, mode="multiply")
     graphics.scale_graphics_y(fig, scale=-273.15, mode="add")
     ax.relim()
     ax.autoscale_view()
     ax.set_xlim(left=state0.s / 1e3)
-    ax.set_ylim(bottom=20, top=180)
+    ax.set_ylim(bottom=y_bottom, top=y_top)
     fig.tight_layout(pad=1.0)
 
     if savefig:
-        fname = f"Ts_{fluid_name}.svg"
-        fdir = os.path.join(out_dir, fname)
-        fig.savefig(fdir, bbox_inches="tight")
-        fname = f"Ts_{fluid_name}.pdf"
-        fdir = os.path.join(out_dir, fname)
-        fig.savefig(fdir, bbox_inches="tight")
+        suffix = "" if single_result else "_sensitivity"
+        fname = f"Ts_{fluid_name}{suffix}.svg"
+        fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
+        fname = f"Ts_{fluid_name}{suffix}.pdf"
+        fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
+        fname = f"Ts_{fluid_name}{suffix}.png"
+        fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
+
+    return fig, ax
+
+
+def plot_sensitivity_subplots(x_values, x_label, results, panels, out_dir, filename, ncols=4, savefig=True):
+    """
+    Plot several result quantities against a common sweep variable, one
+    quantity per subplot, laid out in a grid.
+
+    Parameters
+    ----------
+    x_values : array-like
+        Sweep variable values (shared x-axis), same length/order as results.
+    x_label : str
+        Label for the (shared) x-axis.
+    results : list of dict
+        One result dict per sweep point (as returned by rig_sizing/
+        evaluate_cycle), same length/order as x_values.
+    panels : list of dict
+        One entry per subplot, in the order the subplots are filled
+        (row-major). Each entry needs a "label" (y-axis label) and either:
+        - "key": a top-level key into each result dict, or
+        - "get": a callable taking one result dict and returning the value
+          (for nested values, e.g. a state property, or a derived quantity).
+        An optional "scale" (default 1.0) is multiplied into the value,
+        e.g. for unit conversions such as W -> kW or m -> mm.
+    out_dir : str
+    filename : str
+        File name (without extension) used when savefig is True.
+    ncols : int, optional
+        Number of subplot columns; the number of rows follows from the
+        number of panels.
+    """
+
+    x_values = np.asarray(x_values)
+    n_panels = len(panels)
+    nrows = int(np.ceil(n_panels / ncols))
+
+    # Color each point by its sweep value using the Reds colormap (same
+    # convention as the T-s diagram); the connecting line uses the darkest
+    # shade in the series (highest sweep value).
+    norm = mpl.colors.Normalize(vmin=x_values.min(), vmax=x_values.max())
+    marker_colors = [reds_color(norm(x)) for x in x_values]
+    line_color = "black"
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows), squeeze=False)
+
+    for i, panel in enumerate(panels):
+        row, col = divmod(i, ncols)
+        ax = axes[row, col]
+        getter = panel.get("get", lambda result, key=panel.get("key"): result[key])
+        scale = panel.get("scale", 1.0)
+        y_values = np.array([getter(result) * scale for result in results])
+
+        # Connecting line first (darkest red, no markers), so the
+        # individually-colored markers plotted after it end up on top.
+        ax.plot(x_values, y_values, color=line_color, zorder=1, linewidth=0.75)
+        for x, y, color in zip(x_values, y_values, marker_colors):
+            ax.plot(x, y, marker="o", color=color, linestyle="none", zorder=2)
+
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(panel["label"])
+
+    # Hide unused axes in the grid
+    for i in range(n_panels, nrows * ncols):
+        row, col = divmod(i, ncols)
+        axes[row, col].axis("off")
+
+    fig.tight_layout(pad=1.0)
+
+    if savefig:
+        fig.savefig(os.path.join(out_dir, f"{filename}.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(out_dir, f"{filename}.pdf"), bbox_inches="tight")
+        fig.savefig(os.path.join(out_dir, f"{filename}.png"), bbox_inches="tight")
+
+    return fig, axes
 
 
 def screen_fluid(fluid, config):
@@ -403,38 +569,38 @@ def screen_fluid(fluid, config):
     if jxp.coolprop.is_pure_substance(fluid._AS) is False:
         return False, "Not a pure substance"
 
-    if fluid.critical_point.T < config["Tcrit_min"]:
+    if fluid.critical_point.T < config["critical_temperature_min"]:
         return False, "Critical temperature too low"
 
-    if fluid.critical_point.T > config["Tcrit_max"]:
+    if fluid.critical_point.T > config["critical_temperature_max"]:
         return False, "Critical temperature too high"
 
-    if fluid._AS.Ttriple() > config["Ttrip_max"]:
+    if fluid._AS.Ttriple() > config["triple_point_temperature_max"]:
         return False, "Triple temperature too high"
 
-    if fluid.get_state(jxp.QT_INPUTS, 0.0, config["Tamb"]).p < config["Pmin"]:
+    if fluid.get_state(jxp.QT_INPUTS, 0.0, config["ambient_temperature"]).p < config["ambient_pressure_min"]:
         return False, "Ambient saturation pressure too low"
 
     return True, None
 
 
 def add_scale_to_result(result, A_throat):
-    mass_flow = result["G_star"] * A_throat
+    mass_flow_rate = result["choking_mass_flux"] * A_throat
     h = result["states"]["h"]
     d = result["states"]["d"]
     # Energy flows
-    Q_heater = mass_flow * (h[i_heater_out] - h[i_pump_out])
-    Q_condenser = mass_flow * (h[i_turb_out] - h[i_pump_in])
-    W_turbine = mass_flow * (h[i_turb_in] - h[i_turb_out])
-    W_pump = mass_flow * (h[i_pump_out] - h[i_pump_in])
+    heater_power = mass_flow_rate * (h[i_heater_out] - h[i_pump_out])
+    condenser_power = mass_flow_rate * (h[i_turb_out] - h[i_pump_in])
+    turbine_power = mass_flow_rate * (h[i_turb_in] - h[i_turb_out])
+    pump_power = mass_flow_rate * (h[i_pump_out] - h[i_pump_in])
 
     result.update({
-            "A_throat": A_throat,
-            "mass_flow": mass_flow,
-            "Q_heater": Q_heater,
-            "Q_condenser": Q_condenser,
-            "W_turbine": W_turbine,
-            "W_pump": W_pump,
+            "throat_area": A_throat,
+            "mass_flow_rate": mass_flow_rate,
+            "heater_power": heater_power,
+            "condenser_power": condenser_power,
+            "turbine_power": turbine_power,
+            "pump_power": pump_power,
         })
 
     return None
@@ -446,12 +612,12 @@ def rig_sizing(fluid, data):
     Returns empty dict if screening or cycle evaluation fails.
     """
 
-    if data["use_TITr"]:
-        TIT = data["TITr_MPP"] * fluid.critical_point.T
+    if data["use_reduced_turbine_inlet_temperature"]:
+        TIT = data["turbine_inlet_temperature_reduced"] * fluid.critical_point.T
     else:
-        TIT = data["TIT_MPP"]
-    TIQ = data["TIQ_MPP"]
-    Tcond = data["Tcond_MPP"]
+        TIT = data["turbine_inlet_temperature"]
+    TIQ = data["turbine_inlet_quality"]
+    Tcond = data["condensing_temperature"]
     try:
         converged = True
         result = evaluate_cycle(fluid, data, TIT, TIQ, Tcond)
@@ -464,25 +630,56 @@ def rig_sizing(fluid, data):
     h = result["states"]["h"]
     d = result["states"]["d"]
     q_heater = h[i_heater_out] - h[i_pump_out]
-    mass_flow = data["Q_heater"] / q_heater
-    A_throat = mass_flow / result["G_star"]
-    D_throat = data["D_throat_to_sqrt_A_throat"] * A_throat**0.5
-    L_convergent = data["L_to_D_throat_ratio"] * D_throat
-    v_star = result["v_star"]
-    p_star = result["p_star"]
-    D_drop, v_slip = compute_droplet_size(fluid, v_star, p_star, L_convergent, data)
+    mass_flow_rate = data["heater_power_target"] / q_heater
+    A_throat = mass_flow_rate / result["choking_mass_flux"]
+
+    # Each of the N parallel nozzles carries an equal share of the total
+    # throat area; its diameter follows from A_per_nozzle = pi/4 * D^2.
+    number_of_nozzles = data["number_of_nozzles"]
+    throat_area_per_nozzle = A_throat / number_of_nozzles
+    D_throat = np.sqrt(4.0 * throat_area_per_nozzle / np.pi)
+
+    # Convergent (inlet-to-throat) and total (inlet-to-exit) nozzle lengths,
+    # both scaled from the throat diameter.
+    L_convergent = data["convergent_length_to_throat_diameter_ratio"] * D_throat
+    L_divergent = data["divergent_length_to_throat_diameter_ratio"] * D_throat
+    L_total = L_convergent + L_divergent
+
+    # Droplet size at the throat: the flow here is still low-quality/bubbly
+    # (nucleation has just started), so this is a weaker application of the
+    # droplet breakup model, but is kept for reference/comparison.
+    v_star = result["choking_velocity"]
+    p_star = result["choking_pressure"]
+    D_drop_throat, v_slip_throat = compute_droplet_size(fluid, v_star, p_star, L_convergent, data)
+
+    # Droplet size at the nozzle exit: by here the flow is at substantially
+    # higher void fraction (more likely mist/droplet flow), so this is the
+    # more physically appropriate application of the breakup model. The
+    # acceleration is estimated over the entire nozzle (inlet to exit),
+    # consistent with nozzle_velocity being computed from the same
+    # (v=0) stagnation inlet reference as the throat velocity.
+    v_exit = result["nozzle_velocity"]
+    p_exit = result["states"]["p"][i_nozzle_out]
+    D_drop_exit, v_slip_exit = compute_droplet_size(fluid, v_exit, p_exit, L_total, data)
+
     # add scale to the results
     add_scale_to_result(result, A_throat)
 
     # Turbine rotational speed
     dh_turb = h[i_turb_in] - h[i_turb_out]
-    vol_flow = mass_flow / d[i_turb_out]
-    omega = data["specific_speed"] * dh_turb**0.75 / vol_flow**0.5
+    vol_flow = mass_flow_rate / d[i_turb_out]
+    omega = data["turbine_specific_speed"] * dh_turb**0.75 / vol_flow**0.50
     result.update({
-        "D_drop_ratio": D_throat / D_drop,
-        "RPM": omega * 30.0 / np.pi
+        "number_of_nozzles": number_of_nozzles,
+        "throat_area_per_nozzle": throat_area_per_nozzle,
+        "throat_diameter": D_throat,
+        "droplet_diameter_throat": D_drop_throat,
+        "throat_to_droplet_diameter_ratio": D_throat / D_drop_throat,
+        "droplet_diameter_exit": D_drop_exit,
+        "throat_to_droplet_diameter_ratio_exit": D_throat / D_drop_exit,
+        "turbine_speed": omega * 30.0 / np.pi
         })
-    if result["nozzle_mach"] < data["Ma_noz_min"]:
+    if result["nozzle_mach_number"] < data["nozzle_mach_min"]:
         converged = False
         result = "Nozzle Mach lower than minimum"
     return converged, result
@@ -511,9 +708,9 @@ def print_fluid_status(status, fluid_name, message=None):
 
 def parametric_study(fluid, config, A_th, out_dir, savefig=True):
     fluid_name = fluid.name
-    TITs = np.linspace(*config["TITr_space"]) * fluid.critical_point.T
-    TIQs = np.linspace(*config["TIQ_space"])
-    for n, Tcond in enumerate(config["Tcond_values"]):
+    TITs = np.linspace(*config["turbine_inlet_temperature_reduced_sweep"]) * fluid.critical_point.T
+    TIQs = np.linspace(*config["turbine_inlet_quality_sweep"])
+    for n, Tcond in enumerate(config["condensing_temperatures_sweep"]):
         Qij = np.zeros((TITs.shape[0], TIQs.shape[0])) + np.nan
         xij = Qij + 0.0
         Maij = Qij + 0.0
@@ -524,12 +721,12 @@ def parametric_study(fluid, config, A_th, out_dir, savefig=True):
             for j, TIQ in enumerate(TIQs):
                 try:
                     result = evaluate_cycle(fluid, config, TIT, TIQ, Tcond, A_throat=A_th)
-                    Qij[i, j] = result["Q_heater"]/1000  # kW
-                    Maij[i, j] = result["nozzle_mach"]
+                    Qij[i, j] = result["heater_power"]/1000  # kW
+                    Maij[i, j] = result["nozzle_mach_number"]
                     Tij[i, j] = result["states"]["T"][i_turb_in]
                     Prij[i, j] = result["states"]["p"][i_heater_out]/fluid.critical_point.p
                     sij[i, j] = result["states"]["s"][i_turb_in]
-                    xij[i, j] = result["turbine_outlet_pseudoquality"]
+                    xij[i, j] = result["turbine_outlet_pseudo_quality"]
                 except Exception as e:
                     print(e)
                     pass
@@ -582,3 +779,163 @@ def parametric_study(fluid, config, A_th, out_dir, savefig=True):
                 fig.savefig(fdir, bbox_inches="tight")
 
     return None
+
+
+# Units for the scalar quantities of a rig_sizing()/evaluate_cycle() result,
+# used by print_results() below. All quantities are in base SI units (see
+# module docstring); "-" marks a dimensionless quantity. Ordered roughly
+# from overall rig performance down to nozzle geometry/droplet sizing.
+RESULT_UNITS = {
+    "mass_flow_rate": "kg/s",
+    "heater_power": "W",
+    "condenser_power": "W",
+    "pump_power": "W",
+    "turbine_power": "W",
+    "efficiency_cycle": "-",
+    "ambient_pressure": "Pa",
+    "choking_pressure": "Pa",
+    "choking_velocity": "m/s",
+    "choking_mass_flux": "kg/(m2 s)",
+    "spouting_velocity": "m/s",
+    "nozzle_velocity": "m/s",
+    "nozzle_mach_number": "-",
+    "turbine_outlet_pseudo_quality": "-",
+    "number_of_nozzles": "-",
+    "throat_area": "m2",
+    "throat_area_per_nozzle": "m2",
+    "throat_diameter": "m",
+    "droplet_diameter_throat": "m",
+    "throat_to_droplet_diameter_ratio": "-",
+    "droplet_diameter_exit": "m",
+    "throat_to_droplet_diameter_ratio_exit": "-",
+    "turbine_speed": "rpm",
+}
+
+# Units for the per-state properties stored under result["states"], used by
+# print_results() to print the thermodynamic-state table.
+STATE_UNITS = {
+    "p": "Pa",
+    "T": "K",
+    "h": "J/kg",
+    "s": "J/(kg K)",
+    "d": "kg/m3",
+    "q": "-",
+    "a": "m/s",
+}
+
+# Display-only unit conversions used by print_results() below: displayed
+# value = raw * scale + offset, in the given unit. RESULT_UNITS/STATE_UNITS
+# above still describe the true (SI) units of the values stored in a
+# result dict; these overrides only affect how print_results() formats them
+# for a human-readable report (e.g. Pa -> kPa, K -> degC).
+RESULT_DISPLAY_OVERRIDES = {
+    "heater_power": ("kW", 1e-3, 0.0),
+    "condenser_power": ("kW", 1e-3, 0.0),
+    "pump_power": ("kW", 1e-3, 0.0),
+    "turbine_power": ("kW", 1e-3, 0.0),
+    "ambient_pressure": ("kPa", 1e-3, 0.0),
+    "choking_pressure": ("kPa", 1e-3, 0.0),
+    "throat_area": ("mm2", 1e6, 0.0),
+    "throat_area_per_nozzle": ("mm2", 1e6, 0.0),
+    "throat_diameter": ("mm", 1e3, 0.0),
+    "droplet_diameter_throat": ("um", 1e6, 0.0),
+    "droplet_diameter_exit": ("um", 1e6, 0.0),
+}
+
+STATE_DISPLAY_OVERRIDES = {
+    "p": ("kPa", 1e-3, 0.0),
+    "T": ("degC", 1.0, -273.15),
+    "h": ("kJ/kg", 1e-3, 0.0),
+    "s": ("kJ/(kg K)", 1e-3, 0.0),
+}
+
+# Fixed decimal places used to print each state property in print_results(),
+# so every value in a column lines up at the same width, including zeros
+# (printed as e.g. "0.00", not "0").
+STATE_DECIMALS = {
+    "p": 2,
+    "T": 2,
+    "d": 3,
+    "q": 4,
+    "h": 2,
+    "s": 4,
+}
+
+
+def print_results(result, fluid_name=None, out_dir=None, filename=None, to_terminal=True):
+    """
+    Format the results of a single operating point (as returned by
+    rig_sizing() or evaluate_cycle()) as a human-readable report: one line
+    per scalar quantity, with its name, value and unit, followed by a table
+    of the thermodynamic states.
+
+    Parameters
+    ----------
+    result : dict
+        A single rig_sizing()/evaluate_cycle() result.
+    fluid_name : str, optional
+        Fluid name, shown in the report header if given.
+    out_dir : str, optional
+        If given, the report is also written to a text file in this
+        directory (the directory is created if it does not exist).
+    filename : str, optional
+        File name (without extension) used when out_dir is given. Defaults
+        to "results_<fluid_name>" if fluid_name is given, else "results".
+    to_terminal : bool, optional
+        If True (default), also print the report to the terminal.
+
+    Returns
+    -------
+    text : str
+        The formatted report text.
+    """
+    lines = []
+    header = "Rig sizing results" + (f" - {fluid_name}" if fluid_name else "")
+    lines.append(header)
+    lines.append("=" * len(header))
+
+    name_width = max(len(key) for key in RESULT_UNITS)
+    for key, unit in RESULT_UNITS.items():
+        if key not in result:
+            continue
+        if key in RESULT_DISPLAY_OVERRIDES:
+            unit, scale, offset = RESULT_DISPLAY_OVERRIDES[key]
+            value = result[key] * scale + offset
+        else:
+            value = result[key]
+        lines.append(f"{key:<{name_width}} = {value:>14.6g} {unit}")
+
+    if "states" in result:
+        lines.append("")
+        lines.append("Thermodynamic states")
+        lines.append("-" * len("Thermodynamic states"))
+        props = ["p", "T", "d", "q", "h", "s"]
+        prop_units = [STATE_DISPLAY_OVERRIDES.get(prop, (STATE_UNITS[prop],))[0] for prop in props]
+        lines.append(
+            f"{'state':<16}" + "".join(f"{prop + ' [' + unit + ']':>18}" for prop, unit in zip(props, prop_units))
+        )
+        for i, state_name in enumerate(STATE_MAPPING):
+            row = f"{state_name:<16}"
+            for prop in props:
+                raw = result["states"][prop][i]
+                if prop in STATE_DISPLAY_OVERRIDES:
+                    _, scale, offset = STATE_DISPLAY_OVERRIDES[prop]
+                    value = raw * scale + offset
+                else:
+                    value = raw
+                row += f"{value:>18.{STATE_DECIMALS[prop]}f}"
+            lines.append(row)
+
+    text = "\n".join(lines)
+
+    if to_terminal:
+        print(text)
+
+    if out_dir is not None:
+        if filename is None:
+            filename = f"results_{fluid_name}" if fluid_name else "results"
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, f"{filename}.txt"), "w") as fp:
+            fp.write(text + "\n")
+
+    return text
