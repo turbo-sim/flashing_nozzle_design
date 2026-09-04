@@ -1,0 +1,121 @@
+# =============================================================================
+# Fluid selection
+# =============================================================================
+
+# Fluids to simulate (CoolProp names).
+fluids: [R1233zd(E)]
+# fluids: [Water]
+
+# Backend passed to the fluid property library (e.g. REFPROP, HEOS).
+fluid_backend: HEOS
+
+
+# =============================================================================
+# Cycle operating point
+# =============================================================================
+
+# Ambient temperature [K], used to evaluate the ambient saturation pressure.
+ambient_temperature: 293.15
+
+# If true, the turbine inlet temperature is set from the reduced value
+# (turbine_inlet_temperature_reduced x fluid critical temperature) instead of
+# the absolute value (turbine_inlet_temperature).
+use_reduced_turbine_inlet_temperature: True
+
+# Turbine inlet temperature as a fraction of the fluid critical temperature [-],
+# used when use_reduced_turbine_inlet_temperature is true.
+turbine_inlet_temperature_reduced: 0.9
+
+# Absolute turbine inlet temperature [K], used when
+# use_reduced_turbine_inlet_temperature is false.
+turbine_inlet_temperature: 423.15
+
+# How the nozzle/turbine inlet state is fixed:
+#  - "quality": the inlet is a fixed (T, Q) state on the saturation dome
+#    (turbine_inlet_quality below), reached via a throttle valve that
+#    flashes the subcooled heater outlet down to that quality.
+#  - "subcooling": the inlet is itself a subcooled liquid at the inlet
+#    temperature, subcooled by subcooling_heater_outlet below its own local
+#    saturation temperature. There is no throttle valve in this
+#    configuration: the heater outlet and the nozzle inlet are the same
+#    state, and turbine_inlet_quality is unused.
+nozzle_inlet_condition: subcooling
+
+# Turbine inlet vapor quality [-]. Only used when nozzle_inlet_condition is
+# "quality".
+turbine_inlet_quality: 0.05
+
+# Condensing temperature [K] (40 degC).
+condensing_temperature: 313.15
+
+
+# =============================================================================
+# Component efficiencies and losses
+# =============================================================================
+
+# Nozzle isentropic efficiency [-].
+efficiency_nozzle: 1.0
+
+# Turbine isentropic efficiency [-].
+efficiency_turbine: 0.0
+
+# Pump isentropic efficiency [-].
+efficiency_pump: 0.7
+
+# Fractional pressure loss across the heater [-].
+pressure_loss_fraction_heater: 0.03
+
+# Fractional pressure loss across the condenser [-].
+pressure_loss_fraction_condenser: 0.03
+
+# Turbine stage degree of reaction [-]. Sets the nozzle exit pressure between
+# the turbine inlet and outlet pressures (0 = pure impulse stage).
+degree_of_reaction: 0.0
+
+# Subcooling of the pump inlet state below the condensing temperature [K].
+subcooling_pump_inlet: 5.0
+
+# Subcooling margin enforced at the heater outlet / throttle inlet state [K].
+# When nozzle_inlet_condition is "subcooling", this is also the nozzle inlet
+# subcooling (there is no separate throttle valve in that configuration, so
+# heater outlet and nozzle inlet are the same state).
+subcooling_heater_outlet: 5.0
+
+
+# =============================================================================
+# Rig sizing targets
+# =============================================================================
+
+# Target heater thermal power [W], used to size the mass flow rate.
+heater_power_target: 50000.0
+
+# Turbine specific speed [-], used to estimate the turbine rotational speed.
+turbine_specific_speed: 0.4
+
+# Minimum nozzle exit Mach number required for a design to be satisfactory [-].
+nozzle_mach_min: 0.0
+
+# Convergent section length-to-throat-diameter ratio [-], used to size the
+# length of the convergent nozzle section.
+convergent_length_to_throat_diameter_ratio: 2.0
+
+# Divergent section length-to-throat-diameter ratio [-], used together with
+# convergent_length_to_throat_diameter_ratio to size the total nozzle length
+# (inlet to exit) for the exit droplet breakup calculation.
+divergent_length_to_throat_diameter_ratio: 10.0
+
+# Number of parallel nozzle throats sharing the total mass flow rate [-].
+# throat_area_per_nozzle = throat_area / number_of_nozzles,
+# throat_diameter = sqrt(4 * throat_area_per_nozzle / pi).
+number_of_nozzles: 1
+
+
+# =============================================================================
+# Droplet breakup model
+# =============================================================================
+
+# Critical Weber number used in the droplet breakup criterion [-].
+weber_number_critical: 12
+
+# Droplet drag coefficient [-], used in the droplet breakup model.
+droplet_drag_coefficient: 0.4

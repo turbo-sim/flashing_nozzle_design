@@ -13,7 +13,7 @@ flashing_nozzle_design/
 │       ├── __init__.py
 │       ├── functions.py          # cycle, choking, droplet-size and rig sizing calculations
 │       └── graphics.py           # matplotlib styling and plotting helpers
-├── examples/                     # example scripts and input configuration files
+├── cases/                        # runnable scripts + input configuration files, one folder per case
 └── pyproject.toml                # Poetry project and dependency configuration
 ```
 
@@ -58,12 +58,15 @@ poetry install
 
 This creates an isolated virtual environment, installs all runtime and development dependencies declared in `pyproject.toml`, and installs the project itself in editable mode so that `import flashing_nozzle_design` works everywhere.
 
-## Usage
+### 4. Verify the installation was successful
 
-Run any script through Poetry so it uses the project's virtual environment:
+The quickest way to check everything is working is to run the minimal example in [cases/demo](cases/demo). Run the case through Poetry to make sure it uses the project's virtual environment:
 
 ```bash
-poetry run python examples/run_flashing_nozzle_calculation.py
+poetry run python cases/demo/run_flashing_nozzle_sizing.py
 ```
 
-[Add something about the expected output]
+If the installation succeeded, this will:
+
+- print a report of the thermodynamic states and sizing results
+- opens a plot window with the fluid's temperature-entropy (T-s) diagram
