@@ -1,0 +1,32 @@
+#fluids: [Novec649,R1233zd(E)]
+fluids_parametric: [Novec649,R1233zd(E)]
+Tcrit_min: 373.15
+Tcrit_max: 9999 #673.15
+Ttrip_max: 273.15
+Tamb: 293.15
+Pmin: 20000.0
+use_TITr: True #choose between reduced and absolute turbine inlet temperature
+TIT_MPP: 423.15
+TITr_MPP: 0.95
+TIQ_MPP: 0.05
+Tcond_MPP: 333.15
+specific_speed: 0.4
+Ma_noz_min: 1.4
+Tcond_values: [333.15]
+TIQ_space: [0.001,0.999,18]
+TITr_space: [0.85,0.99,16]
+Q_heater: 90000
+dT_subcool_1: 5.0
+dT_subcool_3: 5.0
+eta_noz: 1.0
+eta_turb: 1.0
+eta_pump: 0.7
+heater_pressure_loss_fraction: 0.03
+condenser_pressure_loss_fraction: 0.03
+reaction: 0.0
+Weber: 12
+droplet_drag_coefficient: 0.4
+L_to_D_throat_ratio: 2.0
+D_throat_to_sqrt_A_throat: 0.29134624815788773 #A=N*pi/4*D^2 ->D/sqrt(A)=sqrt(4/(N*pi)) N=15->0.29134624815788773
+backend: REFPROP
+plot: True
