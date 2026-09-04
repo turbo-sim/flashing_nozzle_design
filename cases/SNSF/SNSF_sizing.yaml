@@ -1,18 +1,10 @@
 # =============================================================================
-# Single-point test rig case (no fluid screening)
-#
-# Sizes the test rig for a fixed list of fluids at one operating point each
-# (no critical/triple-point/ambient-pressure screening, no parametric sweep).
-# Paired with examples/run_single_point_sizing.py.
-# =============================================================================
-
-# =============================================================================
 # Fluid selection
 # =============================================================================
 
-# Fluids to size (CoolProp names). Every fluid in this list is sized and
-# plotted directly, with no screening step.
-fluids: [n-Butane, Water]
+# Fluids to simulate (CoolProp names).
+fluids: [Water, Novec649, R1233zd(E), n-Propane, n-Butane, n-Pentane]
+# fluids: [Water]
 
 # Backend passed to the fluid property library (e.g. REFPROP, HEOS).
 fluid_backend: HEOS
@@ -34,7 +26,23 @@ use_reduced_turbine_inlet_temperature: True
 # used when use_reduced_turbine_inlet_temperature is true.
 turbine_inlet_temperature_reduced: 0.9
 
-# Turbine inlet vapor quality [-].
+# Absolute turbine inlet temperature [K], used when
+# use_reduced_turbine_inlet_temperature is false.
+turbine_inlet_temperature: 423.15
+
+# How the nozzle/turbine inlet state is fixed:
+#  - "quality": the inlet is a fixed (T, Q) state on the saturation dome
+#    (turbine_inlet_quality below), reached via a throttle valve that
+#    flashes the subcooled heater outlet down to that quality.
+#  - "subcooling": the inlet is itself a subcooled liquid at the inlet
+#    temperature, subcooled by subcooling_heater_outlet below its own local
+#    saturation temperature. There is no throttle valve in this
+#    configuration: the heater outlet and the nozzle inlet are the same
+#    state, and turbine_inlet_quality is unused.
+nozzle_inlet_condition: subcooling
+
+# Turbine inlet vapor quality [-]. Only used when nozzle_inlet_condition is
+# "quality".
 turbine_inlet_quality: 0.05
 
 # Condensing temperature [K] (40 degC).
@@ -68,6 +76,9 @@ degree_of_reaction: 0.0
 subcooling_pump_inlet: 5.0
 
 # Subcooling margin enforced at the heater outlet / throttle inlet state [K].
+# When nozzle_inlet_condition is "subcooling", this is also the nozzle inlet
+# subcooling (there is no separate throttle valve in that configuration, so
+# heater outlet and nozzle inlet are the same state).
 subcooling_heater_outlet: 5.0
 
 

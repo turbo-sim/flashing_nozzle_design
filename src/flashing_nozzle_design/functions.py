@@ -295,13 +295,32 @@ def evaluate_cycle(fluid, data, TIT, TIQ, Tcond, A_throat=None):
     # 1 - Pump inlet
     st_1 = fluid.get_state(jxp.PT_INPUTS, st_8.p, st_8.T - data["subcooling_pump_inlet"])
 
-    # 4 - Turbine inlet
-    st_4 = fluid.get_state(jxp.QT_INPUTS, TIQ, TIT)
-
-    # 3 - Heater outlet / throttle inlet
-    p_min = st_1.p
-    p_max = 2.0 * fluid.critical_point.p
-    st_3 = solve_subcooled_state(fluid, st_4.h, data["subcooling_heater_outlet"], p_min, p_max)
+    # 4 - Nozzle/turbine inlet, and 3 - heater outlet / throttle inlet.
+    # Two rig configurations, selected by nozzle_inlet_condition:
+    #  - "quality" (default): the nozzle inlet is fixed on the saturation
+    #    dome at (T, Q). A throttle valve upstream of the nozzle does the
+    #    flashing: state 3 is a subcooled liquid found such that throttling
+    #    it isenthalpically down to state 4 is consistent with h4.
+    #  - "subcooling": the nozzle inlet is itself a subcooled liquid at
+    #    temperature T4, subcooled by subcooling_heater_outlet below its own
+    #    local saturation temperature. Since T_sat is monotonic in P, this
+    #    solves directly (no root-finding): p4 = P_sat(T4 + dT_sub). There
+    #    is no throttle valve in this configuration (the nozzle itself does
+    #    all the flashing), so state 3 (heater outlet) is the same state as
+    #    state 4 (nozzle inlet); subcooling_heater_outlet is reused as the
+    #    nozzle inlet subcooling rather than introducing a second parameter.
+    nozzle_inlet_condition = data.get("nozzle_inlet_condition", "quality")
+    if nozzle_inlet_condition == "quality":
+        st_4 = fluid.get_state(jxp.QT_INPUTS, TIQ, TIT)
+        p_min = st_1.p
+        p_max = 2.0 * fluid.critical_point.p
+        st_3 = solve_subcooled_state(fluid, st_4.h, data["subcooling_heater_outlet"], p_min, p_max)
+    elif nozzle_inlet_condition == "subcooling":
+        p4 = fluid.get_state(jxp.QT_INPUTS, 0.0, TIT + data["subcooling_heater_outlet"]).p
+        st_4 = fluid.get_state(jxp.PT_INPUTS, p4, TIT)
+        st_3 = st_4
+    else:
+        raise ValueError(f"Unknown nozzle_inlet_condition: {nozzle_inlet_condition!r}")
 
     # 2 - Pump outlet
     p2 = st_3.p / (1.0 - data["pressure_loss_fraction_heater"])
@@ -384,49 +403,63 @@ def reds_color(t):
     return mpl.cm.Reds(low + (high - low) * t)
 
 
-def plot_fluid_Ts(fluid_name, results, out_dir, savefig=True, y_margin=20.0, labels=None):
+def plot_fluid_Ts(fluid_name, results, out_dir, savefig=True, y_margin=20.0, labels=None,
+                   group_labels=None, linestyles=None):
     """
     Plot a T-s diagram for one operating condition, or overlay several.
 
-    Backward compatible with functions.py's plot_fluid_Ts: pass a single
+    Backward compatible with the original plot_fluid_Ts: pass a single
     result dict (as returned by rig_sizing()/evaluate_cycle()) to plot one
-    cycle exactly as before (single blue line, no legend). Pass a list of
-    result dicts to overlay several cycles on the same phase diagram: each
-    curve's color comes from the Reds colormap, scaled by its nozzle inlet
-    temperature (lighter red for cooler, darker red for hotter), with a
-    legend (rather than a colorbar) showing "TIT = <value> degC" per curve.
+    cycle exactly as before (single blue line, no legend), or a flat list
+    of result dicts to overlay them, colored by nozzle inlet temperature
+    with a "TIT = <value> degC" legend per curve, exactly as before.
+
+    Pass a list of groups instead (a list of lists of result dicts) to
+    additionally distinguish groups of curves - e.g. different rig
+    configurations, each swept over the same nozzle inlet temperature
+    range - by linestyle. Color still encodes nozzle inlet temperature
+    (normalized across every group, so it's directly comparable between
+    them); linestyle identifies the group. In this mode the legend shows
+    one entry per group (linestyle -> group label) instead of one entry
+    per curve, since a full per-curve legend would be unreadable once
+    there are more than a handful of curves.
 
     Parameters
     ----------
     fluid_name : str
-    results : dict or list of dict
-        A single result, or a list of results to overlay.
+    results : dict, list of dict, or list of list of dict
+        A single result, a flat list of results to overlay, or a list of
+        groups of results to overlay with a distinct linestyle per group.
     out_dir : str
     y_margin : float, optional
         Margin [K] added below the condensing temperature and above the
         higher of the turbine inlet temperature(s) / critical temperature.
     labels : list of str, optional
-        One legend label per entry in `results`, used only when `results`
-        is a list. Defaults to "TIT = <value> degC" using the nozzle inlet
-        temperature of each result.
+        One legend label per result, used only in flat-list mode. Defaults
+        to "TIT = <value> degC" using the nozzle inlet temperature.
+    group_labels : list of str, optional
+        One legend label per group, used only in grouped mode. Defaults to
+        "Group 1", "Group 2", ...
+    linestyles : list of str, optional
+        One matplotlib linestyle per group, used only in grouped mode.
+        Defaults to ["-", "--", "-.", ":"], cycled if there are more
+        groups than styles.
     """
     single_result = isinstance(results, dict)
-    result_list = [results] if single_result else list(results)
+    grouped = (not single_result) and len(results) > 0 and isinstance(results[0], (list, tuple))
 
-    if not single_result:
-        # Color and (by default) label each curve by its nozzle inlet
-        # temperature (the "turbine_inlet" state in this nozzle-only rig).
-        T_inlet = [result["states"]["T"][i_turb_in] for result in result_list]
-        norm = mpl.colors.Normalize(vmin=min(T_inlet), vmax=max(T_inlet))
-        colors = [reds_color(norm(T)) for T in T_inlet]
-        if labels is None:
-            labels = [f"TIT = {T - 273.15:.0f} °C" for T in T_inlet]
-        # Plot from the highest nozzle inlet temperature down to the lowest.
-        plot_order = sorted(range(len(result_list)), key=lambda i: T_inlet[i], reverse=True)
+    if single_result:
+        groups = [[results]]
+    elif grouped:
+        groups = [list(group) for group in results]
     else:
-        plot_order = [0]
+        groups = [list(results)]
+
+    if linestyles is None:
+        linestyles = ["-", "--", "-.", ":"]
 
     fig, ax = plt.subplots(figsize=(5, 4))
+    ax.set_title(fluid_name)
     ax.set_xlabel("Entropy [kJ/(kg K)]")
     ax.set_ylabel("Temperature [°C]")
 
@@ -439,62 +472,107 @@ def plot_fluid_Ts(fluid_name, results, out_dir, savefig=True, y_margin=20.0, lab
     # Reference state for axis limits
     state0 = fluid.get_state(jxp.QT_INPUTS, 0.0, 273.15)
 
-    for i in plot_order:
-        result = result_list[i]
-        states = result["states"]
-        s = np.asarray(states["s"])
-        T = np.asarray(states["T"])
-        if single_result:
-            ax.plot(s, T, marker="o", color="b", markersize=4)
-        else:
-            ax.plot(s, T, marker="o", color=colors[i], label=labels[i], markersize=4)
-
     if not single_result:
+        # Color every curve by its nozzle inlet temperature (the
+        # "turbine_inlet" state in this nozzle-only rig), normalized across
+        # all groups so color is directly comparable between them.
+        T_all = [result["states"]["T"][i_turb_in] for group in groups for result in group]
+        norm = mpl.colors.Normalize(vmin=min(T_all), vmax=max(T_all))
+
+    for g, group in enumerate(groups):
+        linestyle = linestyles[g % len(linestyles)]
+        T_group = [result["states"]["T"][i_turb_in] for result in group]
+
+        if not grouped and not single_result:
+            curve_labels = labels if labels is not None else [f"TIT = {T - 273.15:.0f} °C" for T in T_group]
+        else:
+            curve_labels = [None] * len(group)
+
+        # Plot from the highest nozzle inlet temperature down to the lowest
+        # within each group, so darker (hotter) curves end up on top.
+        for i in sorted(range(len(group)), key=lambda i: T_group[i], reverse=True):
+            result = group[i]
+            s = np.asarray(result["states"]["s"])
+            T = np.asarray(result["states"]["T"])
+            if single_result:
+                ax.plot(s, T, marker="o", color="b", markersize=4)
+            else:
+                color = reds_color(norm(T_group[i]))
+                ax.plot(s, T, marker="o", color=color, linestyle=linestyle, label=curve_labels[i], markersize=4)
+
+    if grouped:
+        if group_labels is None:
+            group_labels = [f"Group {g + 1}" for g in range(len(groups))]
+        proxies = [Line2D([0], [0], color="black", linestyle=linestyles[g % len(linestyles)])
+                   for g in range(len(groups))]
+        ax.legend(proxies, group_labels, loc="upper left", fontsize=9)
+    elif not single_result:
         ax.legend(loc="upper left", fontsize=9)
 
     # Temperature axis limits: below the (lowest) condensing temperature,
     # and above the (highest) turbine inlet temperature / the critical
     # temperature, so the full saturation dome is always visible.
-    T_cond = min(result["states"]["T"][i_cond_liq] for result in result_list)
-    T_tit_max = max(result["states"]["T"][i_turb_in] for result in result_list)
+    all_results = [result for group in groups for result in group]
+    T_cond = min(result["states"]["T"][i_cond_liq] for result in all_results)
+    T_tit_max = max(result["states"]["T"][i_turb_in] for result in all_results)
     y_bottom = (T_cond - y_margin) - 273.15
     y_top = (max(T_tit_max, fluid.critical_point.T) + y_margin) - 273.15
+
+    # Entropy axis right limit: s_crit plus the (s_crit - state0.s) span
+    # with a 25% extra margin, so the dome's right side has breathing room.
+    s_span = fluid.critical_point.s - state0.s
+    s_right = fluid.critical_point.s + 0.5 * s_span
 
     # Adjust axes scale and limits
     graphics.scale_graphics_x(fig, scale=1e-3, mode="multiply")
     graphics.scale_graphics_y(fig, scale=-273.15, mode="add")
     ax.relim()
     ax.autoscale_view()
-    ax.set_xlim(left=state0.s / 1e3)
+    ax.set_xlim(left=state0.s / 1e3, right=s_right / 1e3)
     ax.set_ylim(bottom=y_bottom, top=y_top)
     fig.tight_layout(pad=1.0)
 
     if savefig:
-        suffix = "" if single_result else "_sensitivity"
-        fname = f"Ts_{fluid_name}{suffix}.svg"
-        fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
-        fname = f"Ts_{fluid_name}{suffix}.pdf"
-        fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
-        fname = f"Ts_{fluid_name}{suffix}.png"
+        # fname = f"{fluid_name}_Ts_diagram.svg"
+        # fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
+        # fname = f"{fluid_name}_Ts_diagram.pdf"
+        # fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
+        fname = f"{fluid_name}_Ts_diagram.png"
         fig.savefig(os.path.join(out_dir, fname), bbox_inches="tight")
 
     return fig, ax
 
 
-def plot_sensitivity_subplots(x_values, x_label, results, panels, out_dir, filename, ncols=4, savefig=True):
+def plot_sensitivity_subplots(x_values, x_label, results, panels, out_dir, filename, ncols=4, savefig=True,
+                               group_labels=None, linestyles=None, title=None):
     """
     Plot several result quantities against a common sweep variable, one
     quantity per subplot, laid out in a grid.
 
+    Backward compatible with the original plot_sensitivity_subplots: pass a
+    flat array-like of sweep values and a flat list of result dicts to plot
+    one line per panel, exactly as before.
+
+    Pass a list of groups instead - a list of array-likes for `x_values`
+    and a matching list of lists of result dicts for `results`, one entry
+    per group (e.g. different rig configurations, each swept over its own
+    nozzle inlet temperature values) - to plot one line per group per
+    panel, each with its own linestyle. Points are still colored by their
+    sweep value using the Reds colormap, normalized across every group so
+    color is directly comparable between them; a single legend (linestyle
+    -> group label) is added to the first subplot.
+
     Parameters
     ----------
-    x_values : array-like
-        Sweep variable values (shared x-axis), same length/order as results.
+    x_values : array-like, or list of array-like
+        Sweep variable values (shared x-axis within a group), matching
+        `results` in structure: a flat array-like for a flat `results`, or
+        a list of array-likes (one per group) for a grouped `results`.
     x_label : str
         Label for the (shared) x-axis.
-    results : list of dict
-        One result dict per sweep point (as returned by rig_sizing/
-        evaluate_cycle), same length/order as x_values.
+    results : list of dict, or list of list of dict
+        A flat list of result dicts (one group, backward compatible), or a
+        list of groups of result dicts.
     panels : list of dict
         One entry per subplot, in the order the subplots are filled
         (row-major). Each entry needs a "label" (y-axis label) and either:
@@ -509,18 +587,37 @@ def plot_sensitivity_subplots(x_values, x_label, results, panels, out_dir, filen
     ncols : int, optional
         Number of subplot columns; the number of rows follows from the
         number of panels.
+    group_labels : list of str, optional
+        One legend label per group, used only in grouped mode. Defaults to
+        "Group 1", "Group 2", ...
+    linestyles : list of str, optional
+        One matplotlib linestyle per group, used only in grouped mode.
+        Defaults to ["-", "--", "-.", ":"] (same order as plot_fluid_Ts, so
+        a group's linestyle matches between the two figures), cycled if
+        there are more groups than styles.
+    title : str, optional
+        Figure-level title (e.g. the fluid name).
     """
 
-    x_values = np.asarray(x_values)
+    grouped = len(results) > 0 and isinstance(results[0], (list, tuple))
+
+    if grouped:
+        result_groups = [list(group) for group in results]
+        x_groups = [np.asarray(x) for x in x_values]
+    else:
+        result_groups = [list(results)]
+        x_groups = [np.asarray(x_values)]
+
+    if linestyles is None:
+        linestyles = ["-", "--", ":", "-."]
+
     n_panels = len(panels)
     nrows = int(np.ceil(n_panels / ncols))
 
-    # Color each point by its sweep value using the Reds colormap (same
-    # convention as the T-s diagram); the connecting line uses the darkest
-    # shade in the series (highest sweep value).
-    norm = mpl.colors.Normalize(vmin=x_values.min(), vmax=x_values.max())
-    marker_colors = [reds_color(norm(x)) for x in x_values]
-    line_color = "black"
+    # Color every point by its sweep value using the Reds colormap (same
+    # convention as the T-s diagram), normalized across all groups.
+    x_all = np.concatenate(x_groups)
+    norm = mpl.colors.Normalize(vmin=x_all.min(), vmax=x_all.max())
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows), squeeze=False)
 
@@ -529,13 +626,17 @@ def plot_sensitivity_subplots(x_values, x_label, results, panels, out_dir, filen
         ax = axes[row, col]
         getter = panel.get("get", lambda result, key=panel.get("key"): result[key])
         scale = panel.get("scale", 1.0)
-        y_values = np.array([getter(result) * scale for result in results])
 
-        # Connecting line first (darkest red, no markers), so the
-        # individually-colored markers plotted after it end up on top.
-        ax.plot(x_values, y_values, color=line_color, zorder=1, linewidth=0.75)
-        for x, y, color in zip(x_values, y_values, marker_colors):
-            ax.plot(x, y, marker="o", color=color, linestyle="none", zorder=2)
+        for g, (x_group, result_group) in enumerate(zip(x_groups, result_groups)):
+            y_values = np.array([getter(result) * scale for result in result_group])
+            linestyle = linestyles[g % len(linestyles)]
+            marker_colors = [reds_color(norm(x)) for x in x_group]
+
+            # Connecting line first (black, group linestyle, no markers), so
+            # the individually-colored markers plotted after it end up on top.
+            ax.plot(x_group, y_values, color="black", linestyle=linestyle, zorder=1, linewidth=0.75)
+            for x, y, color in zip(x_group, y_values, marker_colors):
+                ax.plot(x, y, marker="o", color=color, linestyle="none", zorder=2)
 
         ax.set_xlabel(x_label)
         ax.set_ylabel(panel["label"])
@@ -545,11 +646,22 @@ def plot_sensitivity_subplots(x_values, x_label, results, panels, out_dir, filen
         row, col = divmod(i, ncols)
         axes[row, col].axis("off")
 
-    fig.tight_layout(pad=1.0)
+    if grouped:
+        if group_labels is None:
+            group_labels = [f"Group {g + 1}" for g in range(len(result_groups))]
+        proxies = [Line2D([0], [0], color="black", linestyle=linestyles[g % len(linestyles)])
+                   for g in range(len(result_groups))]
+        axes[0, 0].legend(proxies, group_labels, loc="best", fontsize=8)
+
+    if title is not None:
+        fig.suptitle(title)
+        fig.tight_layout(pad=1.0, rect=[0, 0, 1, 0.97])
+    else:
+        fig.tight_layout(pad=1.0)
 
     if savefig:
-        fig.savefig(os.path.join(out_dir, f"{filename}.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(out_dir, f"{filename}.pdf"), bbox_inches="tight")
+        # fig.savefig(os.path.join(out_dir, f"{filename}.svg"), bbox_inches="tight")
+        # fig.savefig(os.path.join(out_dir, f"{filename}.pdf"), bbox_inches="tight")
         fig.savefig(os.path.join(out_dir, f"{filename}.png"), bbox_inches="tight")
 
     return fig, axes
@@ -616,7 +728,7 @@ def rig_sizing(fluid, data):
         TIT = data["turbine_inlet_temperature_reduced"] * fluid.critical_point.T
     else:
         TIT = data["turbine_inlet_temperature"]
-    TIQ = data["turbine_inlet_quality"]
+    TIQ = data.get("turbine_inlet_quality")
     Tcond = data["condensing_temperature"]
     try:
         converged = True
